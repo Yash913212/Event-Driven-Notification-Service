@@ -1,187 +1,129 @@
 # Event-Driven Notification Service
 
-An enterprise-ready, scalable, and fully containerized event-driven notification microservice architecture built with **Node.js/Express**, **Apache Kafka**, and **MySQL**.
+This is a simple notification system that processes user activities (like post likes or comments) asynchronously in the background. It consists of an API service, a Kafka message broker, a consumer worker, and a MySQL database.
 
-This project implements an Event-Driven Architecture (EDA) where user activities (likes, comments) are processed asynchronously in real time. It enforces **idempotency** using a double-layered check: an application-level state check combined with a database-level UNIQUE constraint on the event ID.
+By using Kafka as a buffer, the API doesn't block waiting for notifications to be created. It immediately returns a success status to the user, and the background worker processes the event and saves the notification in the database.
 
 ---
 
-## Architectural Overview
+## How It Works
+
+Here is a quick flow of how an event becomes a notification:
 
 ```mermaid
 flowchart TD
     Client[Client / Client App]
     API[API Service: Port 3000]
-    Kafka[Apache Kafka Broker: Port 9092/9093]
+    Kafka[Apache Kafka Broker]
     Consumer[Consumer Service]
-    MySQL[(MySQL Database: Port 3306)]
+    MySQL[(MySQL Database)]
 
     Client -->|1. POST Event| API
-    API -->|2. Validate & Standardize| API
-    API -->|3. Publish Event JSON| Kafka
-    API -->|4. Return 202 Accepted| Client
+    API -->|2. Publish Event| Kafka
+    API -->|3. Return 202 Accepted| Client
 
-    Consumer -->|5. Poll Events| Kafka
-    Consumer -->|6. Process event & check processed_event_id| MySQL
-    Consumer -->|7. Insert notification| MySQL
+    Consumer -->|4. Pull Event| Kafka
+    Consumer -->|5. Check & Save Notification| MySQL
 
-    Client -->|8. GET notifications| API
-    API -->|9. Query unread notifications| MySQL
-    Client -->|10. PATCH mark as read| API
-    API -->|11. Update notification status| MySQL
+    Client -->|6. GET notifications| API
+    API -->|7. Query DB| MySQL
 ```
 
-1. **API Service**: Receives client HTTP requests, validates the schema/structure, generates a unique `event_id` and publishes it to Apache Kafka.
-2. **Apache Kafka**: Serves as the high-throughput, low-latency message broker storing activity events under the `user-activity` topic.
-3. **Consumer Service**: Listens continuously to Kafka, parses events, converts them to structured messages, and processes them. It guarantees **Idempotency** (exactly-once processing) to prevent duplicate notifications.
-4. **MySQL Database**: Stores persistent notifications with a state of `unread` or `read`.
+1. **Client** publishes an activity (like a "like" or "comment") to the API Service.
+2. **API Service** validates the payload, generates a unique ID for the event, pushes it to Kafka, and immediately tells the client: "Got it!" (202 Accepted).
+3. **Consumer Service** reads events from Kafka, turns them into user-friendly notification messages, and saves them to MySQL. It ensures that even if Kafka delivers the same event twice, we only save it once (idempotent processing).
+4. **Client** can then fetch their unread notifications or mark them as read via the API.
 
 ---
 
-## Tech Stack
-
-*   **API Framework**: Node.js & Express.js
-*   **Message Broker**: Apache Kafka (orchestrated via Confluent ZooKeeper & CP-Kafka)
-*   **Database**: MySQL 8.0
-*   **Libraries**:
-    *   `kafkajs` (Kafka Client)
-    *   `mysql2` (Database Connector)
-    *   `uuid` (ID Generation)
-    *   `jest` & `supertest` (Testing Frameworks)
-*   **Deployment**: Docker & Docker Compose
-
----
-
-## Quick Start & Setup
+## Getting Started
 
 ### Prerequisites
-Make sure you have [Docker](https://docs.docker.com/) and [Docker Compose](https://docs.docker.com/compose/) installed on your machine.
+You'll need [Docker](https://docs.docker.com/) and [Docker Compose](https://docs.docker.com/compose/) installed.
 
-### 1. Configure Environment Variables
-Copy the `.env.example` file to `.env`:
+### 1. Set up environment variables
+Copy the template environment file:
 ```bash
 cp .env.example .env
 ```
 
-### 2. Spin Up Services
-Run the following command to build and launch all containers (ZooKeeper, Kafka, MySQL, API Service, and Consumer Service):
+### 2. Start the services
+Run the following command to build and start all containers (Kafka, Zookeeper, MySQL, API, and the Consumer):
 ```bash
-docker-compose up -d --build
+docker compose up -d --build
 ```
+*(If you are on an older Docker version, you might need to run `docker-compose up -d --build` instead).*
 
-### 3. Verify Container Status
-Check that all containers are healthy and running:
+### 3. Check if everything is running
+To see the status of your containers, run:
 ```bash
-docker-compose ps
+docker compose ps
 ```
-The health checks will guarantee that the API and Consumer services only launch after MySQL and Kafka are fully operational.
+The services are configured to wait until MySQL and Kafka are healthy before they start processing requests.
 
 ---
 
-## API Specifications
+## Testing it Out
 
-### 1. Publish User Activity Event
-Publish a social interaction (like a post or comment) to the event stream.
+You can test the entire flow using these `curl` commands in your terminal:
 
-*   **Endpoint**: `POST /api/user-activity-events`
-*   **Headers**: `Content-Type: application/json`
-*   **Request Body**:
-    ```json
-    {
-      "event_type": "user_liked_post",
-      "payload": {
-        "user_id": "test-user-1",
-        "post_id": "post-123",
-        "recipient_id": "test-user-2"
-      }
+### 1. Send an activity event
+Let's pretend `test-user-1` liked a post belonging to `test-user-2`:
+```bash
+curl -X POST http://localhost:3000/api/user-activity-events \
+  -H "Content-Type: application/json" \
+  -d '{
+    "event_type": "user_liked_post",
+    "payload": {
+      "user_id": "test-user-1",
+      "post_id": "post-123",
+      "recipient_id": "test-user-2"
     }
-    ```
-*   **Response**: `202 Accepted`
-    ```json
-    {
-      "message": "Event published successfully",
-      "event_id": "764b85c1-3d77-4b15-996c-8c08795fd810"
-    }
-    ```
-
-### 2. Get User Notifications
-Retrieve all pending unread notifications for a specific user.
-
-*   **Endpoint**: `GET /api/users/{userId}/notifications`
-*   **Response**: `200 OK`
-    ```json
-    [
-      {
-        "notification_id": "4020a597-9092-498c-9b16-cd34f40fbc0e",
-        "recipient_user_id": "test-user-2",
-        "event_type": "user_liked_post",
-        "message_content": "Your post was liked by test-user-1.",
-        "status": "unread",
-        "created_at": "2026-06-16T15:23:44.000Z"
-      }
-    }
-    ```
-
-### 3. Mark Notification as Read
-Mark a specific notification as read.
-
-*   **Endpoint**: `PATCH /api/notifications/{notificationId}/read`
-*   **Response**: `204 No Content`
-
----
-
-## Schemas
-
-### Kafka Message Schema
-Events published to the `user-activity` Kafka topic strictly follow this format:
-```json
-{
-  "event_id": "uuid-unique-for-this-event-instance",
-  "timestamp": "ISO 8601 string",
-  "source": "api-service",
-  "event_type": "user_liked_post",
-  "payload": {
-    "user_id": "uuid-of-actor",
-    "target_id": "uuid-of-target-entity-e.g.-post",
-    "recipient_id": "uuid-of-user-to-notify",
-    "comment_text": "Optional comment content"
-  }
-}
+  }'
 ```
+You should get a `202 Accepted` response with an `event_id`.
 
-### MySQL Database Schema (`database/init.sql`)
-```sql
-CREATE TABLE IF NOT EXISTS notifications (
-    notification_id VARCHAR(36) PRIMARY KEY,
-    recipient_user_id VARCHAR(36) NOT NULL,
-    event_type VARCHAR(50) NOT NULL,
-    message_content TEXT NOT NULL,
-    status ENUM('unread', 'read') DEFAULT 'unread',
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    processed_event_id VARCHAR(36) UNIQUE NOT NULL
-);
+### 2. Retrieve notifications for the recipient
+Now, check if `test-user-2` received the notification:
+```bash
+curl http://localhost:3000/api/users/test-user-2/notifications
 ```
+You should see a list of notifications, including the one we just generated (e.g., *"Your post was liked by test-user-1"*). Note the `notification_id` from the response.
+
+### 3. Mark the notification as read
+Using the `notification_id` from the previous step, mark it as read:
+```bash
+# Replace <notification_id> with the actual ID returned from the previous step
+curl -X PATCH http://localhost:3000/api/notifications/<notification_id>/read
+```
+This will return a `204 No Content` status, meaning the notification is now marked as read.
 
 ---
 
 ## Running Tests
 
-You can run unit test suites either inside Docker containers or on your local machine.
+If you want to run the test suite, you can do so either inside the running Docker containers or locally on your machine.
 
-### Running Inside Docker
+### Inside Docker
 ```bash
-# API Service tests
-docker-compose exec api-service npm test
+# Run API Service tests
+docker compose exec api-service npm test
 
-# Consumer Service tests
-docker-compose exec consumer-service npm test
+# Run Consumer Service tests
+docker compose exec consumer-service npm test
 ```
 
-### Running Locally
+### Locally
+Ensure you run `npm install` first in each directory:
 ```bash
-# Inside api-service directory
+# API Service
 cd api-service && npm install && npm test
 
-# Inside consumer-service directory
+# Consumer Service
 cd consumer-service && npm install && npm test
 ```
+
+---
+
+## Want to Know More?
+For detailed information on the system architecture, database schema design, and how we handle duplicate messages (idempotency), check out [ARCHITECTURE.md](ARCHITECTURE.md).
