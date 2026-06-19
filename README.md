@@ -114,8 +114,3 @@ cd api-service && npm install && npm test
 # Consumer Service
 cd consumer-service && npm install && npm test
 ```
-
----
-
-## Under the Hood
-For details on system architecture, database index optimization, and the two-layer idempotency strategy (exactly-once semantics), check out [ARCHITECTURE.md](ARCHITECTURE.md).
