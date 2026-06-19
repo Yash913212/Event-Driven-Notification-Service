@@ -1,14 +1,14 @@
 # Event-Driven Notification Service
 
-This is a simple notification system that processes user activities (like post likes or comments) asynchronously in the background. It consists of an API service, a Kafka message broker, a consumer worker, and a MySQL database.
+This is a simple system that handles user activity events (like liking a post or adding a comment) and processes them in the background to create notifications. 
 
-By using Kafka as a buffer, the API doesn't block waiting for notifications to be created. It immediately returns a success status to the user, and the background worker processes the event and saves the notification in the database.
+Instead of making the user wait while we generate and save notifications, the API publishes events to a Kafka broker and immediately returns a `202 Accepted` response. A separate background worker (the Consumer Service) pulls these events from Kafka and saves them to a MySQL database.
 
 ---
 
-## How It Works
+## System Flow
 
-Here is a quick flow of how an event becomes a notification:
+Here is how an event becomes a notification:
 
 ```mermaid
 flowchart TD
@@ -29,46 +29,39 @@ flowchart TD
     API -->|7. Query DB| MySQL
 ```
 
-1. **Client** publishes an activity (like a "like" or "comment") to the API Service.
-2. **API Service** validates the payload, generates a unique ID for the event, pushes it to Kafka, and immediately tells the client: "Got it!" (202 Accepted).
-3. **Consumer Service** reads events from Kafka, turns them into user-friendly notification messages, and saves them to MySQL. It ensures that even if Kafka delivers the same event twice, we only save it once (idempotent processing).
-4. **Client** can then fetch their unread notifications or mark them as read via the API.
+1. **Client** sends a request with the user activity to the API.
+2. **API Service** validates the input, generates a unique event ID, pushes it to Kafka, and immediately replies with `202 Accepted`.
+3. **Consumer Service** pulls the event from Kafka, generates a friendly notification message, and saves it to MySQL. (It handles duplicate events safely so we don't spam the user).
+4. **Client** can then fetch their notifications or mark them as read via the API.
 
 ---
 
-## Getting Started
+## Setup & Running
 
 ### Prerequisites
 You'll need [Docker](https://docs.docker.com/) and [Docker Compose](https://docs.docker.com/compose/) installed.
 
-### 1. Set up environment variables
-Copy the template environment file:
+### 1. Configure the Environment
+Copy the example environment file to create your `.env` file:
 ```bash
 cp .env.example .env
 ```
 
-### 2. Start the services
-Run the following command to build and start all containers (Kafka, Zookeeper, MySQL, API, and the Consumer):
+### 2. Start the Services
+Run this command to build and start Zookeeper, Kafka, MySQL, the API, and the Consumer:
 ```bash
 docker compose up -d --build
 ```
-*(If you are on an older Docker version, you might need to run `docker-compose up -d --build` instead).*
-
-### 3. Check if everything is running
-To see the status of your containers, run:
-```bash
-docker compose ps
-```
-The services are configured to wait until MySQL and Kafka are healthy before they start processing requests.
+The services will wait for MySQL and Kafka to be healthy before starting up.
 
 ---
 
-## Testing it Out
+## How to Test It (cURL / Postman)
 
-You can test the entire flow using these `curl` commands in your terminal:
+All API requests go through port `3000`.
 
-### 1. Send an activity event
-Let's pretend `test-user-1` liked a post belonging to `test-user-2`:
+### 1. Send an Event
+Simulate `test-user-1` liking a post owned by `test-user-2`:
 ```bash
 curl -X POST http://localhost:3000/api/user-activity-events \
   -H "Content-Type: application/json" \
@@ -81,40 +74,39 @@ curl -X POST http://localhost:3000/api/user-activity-events \
     }
   }'
 ```
-You should get a `202 Accepted` response with an `event_id`.
+You'll get back a `202 Accepted` response with an `event_id`.
 
-### 2. Retrieve notifications for the recipient
-Now, check if `test-user-2` received the notification:
+### 2. Fetch Notifications
+Check if the notification was generated for `test-user-2`:
 ```bash
 curl http://localhost:3000/api/users/test-user-2/notifications
 ```
-You should see a list of notifications, including the one we just generated (e.g., *"Your post was liked by test-user-1"*). Note the `notification_id` from the response.
+This returns a list of unread notifications, including the one we just triggered. Note down the `notification_id` from the response.
 
-### 3. Mark the notification as read
-Using the `notification_id` from the previous step, mark it as read:
+### 3. Mark as Read
+Use the `notification_id` to mark it as read:
 ```bash
-# Replace <notification_id> with the actual ID returned from the previous step
 curl -X PATCH http://localhost:3000/api/notifications/<notification_id>/read
 ```
-This will return a `204 No Content` status, meaning the notification is now marked as read.
+This returns a `204 No Content` status, confirming the notification is now marked as read.
 
 ---
 
-## Running Tests
+## Running the Tests
 
-If you want to run the test suite, you can do so either inside the running Docker containers or locally on your machine.
+You can run the unit test suite either inside the Docker containers or locally.
 
 ### Inside Docker
 ```bash
-# Run API Service tests
+# Test API Service
 docker compose exec api-service npm test
 
-# Run Consumer Service tests
+# Test Consumer Service
 docker compose exec consumer-service npm test
 ```
 
 ### Locally
-Ensure you run `npm install` first in each directory:
+Make sure to install dependencies first:
 ```bash
 # API Service
 cd api-service && npm install && npm test
@@ -125,5 +117,5 @@ cd consumer-service && npm install && npm test
 
 ---
 
-## Want to Know More?
-For detailed information on the system architecture, database schema design, and how we handle duplicate messages (idempotency), check out [ARCHITECTURE.md](ARCHITECTURE.md).
+## Under the Hood
+For details on system architecture, database index optimization, and the two-layer idempotency strategy (exactly-once semantics), check out [ARCHITECTURE.md](ARCHITECTURE.md).
